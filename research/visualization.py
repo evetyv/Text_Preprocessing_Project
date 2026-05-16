@@ -7,28 +7,45 @@ from pathlib import Path
 INPUT_CSV = 'research/data/full_benchmark_detailed.csv'
 OUTPUT_DIR = 'research/data'
 
-# Метрики для анализа
+# Метрики (ключи в CSV)
 METRICS = ['pk', 'wd', 'intra', 'f1']
 
-METHODS = {
+# Русские названия метрик для подписей
+METRIC_NAMES_RU = {
+    'pk': 'Pk',
+    'wd': 'WindowDiff',
+    'intra': 'Внутренняя однородность',
+    'f1': 'Boundary F1'
+}
+
+# Полный список методов (ключ: русское название, значение: префикс в колонках CSV)
+ALL_METHODS = {
     'По абзацам': 'par',
     'Фиксированный размер': 'fix',
     'Ключевые слова': 'sem_key',
-    'Жадное наращивание (MiniLM)': 'gr',
-    'Иерарх. класт. (MiniLM, истинное число блоков)': 'hier_oracle_minilm',
-    'Иерарх. класт. (RuBERT, истинное число блоков)': 'hier_oracle_rubert',
+    'Жадное наращивание\n(MiniLM)': 'gr',
+    'Иерарх. класт.\n(MiniLM, oracle)': 'hier_oracle_minilm',
+    'Иерарх. класт.\n(RuBERT, oracle)': 'hier_oracle_rubert',
     'Предлагаемый метод': 'sememb',
     'Логистическая регрессия': 'sup',
+}
+
+# Группы методов для отдельных рисунков
+GROUPS = {
+    'Базовые методы': ['По абзацам', 'Фиксированный размер', 'Ключевые слова', 'Предлагаемый метод'],
+    'Иерархические и жадный': [
+        'Жадное наращивание\n(MiniLM)',
+        'Иерарх. класт.\n(MiniLM, oracle)',
+        'Иерарх. класт.\n(RuBERT, oracle)',
+        'Предлагаемый метод'
+    ],
+    'Обученный (supervised)': ['Логистическая регрессия', 'Предлагаемый метод'],
 }
 
 def load_data():
     df = pd.read_csv(INPUT_CSV)
     print(f"Загружено {len(df)} документов")
     return df
-
-def get_metric_columns(df, metric):
-    return {label: f"{prefix}_{metric}" for label, prefix in METHODS.items()
-            if f"{prefix}_{metric}" in df.columns}
 
 def bootstrap_ci(data, n_boot=1000, alpha=0.95):
     """95% доверительный интервал для среднего (бутстреп)."""
@@ -38,78 +55,83 @@ def bootstrap_ci(data, n_boot=1000, alpha=0.95):
     upper = np.percentile(boot_means, (1 + alpha) / 2 * 100)
     return np.mean(data), lower, upper
 
-def plot_boxplot(df, metric='pk', output_file=None):
-    cols = get_metric_columns(df, metric)
-    # Оставляем только методы с ненулевой средней 
-    active_cols = {label: col for label, col in cols.items() if df[col].mean() != 0}
-    plot_df = df[list(active_cols.values())].copy()
-    plot_df.columns = list(active_cols.keys())
+def get_method_column(method_name):
+    """Возвращает имя колонки в DataFrame для данного метода и метрики (будет дополнено позже)."""
+    return ALL_METHODS[method_name]
 
-    plot_melt = plot_df.melt(var_name='Метод', value_name=metric.upper())
+def plot_group_comparison(df, group_name, method_names, output_file=None):
+    """
+    Рисует один рисунок с 2x2 подграфиками (Pk, WindowDiff, Intra, F1)
+    для заданной группы методов.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
 
-    plt.figure(figsize=(12, 6))
-    # Выделяем предлагаемый метод красным
-    palette = {m: '#d62728' if 'Предлагаемый' in m else '#1f77b4' for m in active_cols}
-    sns.boxplot(data=plot_melt, x='Метод', y=metric.upper(), hue='Метод',
-            palette=palette, dodge=False, legend=False)
-    plt.xticks(rotation=30, ha='right')
-    plt.title(f'Сравнение методов по метрике {metric.upper()}')
+    for idx, metric in enumerate(METRICS):
+        ax = axes[idx]
+        metric_ru = METRIC_NAMES_RU[metric]
+
+        # Собираем данные только для методов этой группы
+        means = []
+        low_err = []
+        high_err = []
+        labels = []
+        colors = []
+
+        for method_name in method_names:
+            prefix = ALL_METHODS[method_name]
+            col_name = f"{prefix}_{metric}"
+            if col_name not in df.columns:
+                continue
+            data = df[col_name].dropna().values
+            if len(data) == 0:
+                continue
+            m_mean, low, high = bootstrap_ci(data)
+            means.append(m_mean)
+            low_err.append(m_mean - low)
+            high_err.append(high - m_mean)
+            # Для переносов строк в подписях оставим короткое имя
+            short_name = method_name.replace('\n', ' ')
+            labels.append(short_name)
+            colors.append('#d62728' if 'Предлагаемый' in method_name else '#1f77b4')
+
+        x = np.arange(len(labels))
+        bars = ax.bar(x, means, yerr=[low_err, high_err], capsize=5,
+                      color=colors, edgecolor='black', alpha=0.85)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=25, ha='right', fontsize=9)
+        ax.set_ylabel(metric_ru, fontsize=11)
+        ax.set_title(f'{metric_ru}', fontsize=12)
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+
+        # Подписываем значения над столбцами
+        for bar, mean_val in zip(bars, means):
+            ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.01,
+                    f'{mean_val:.3f}', ha='center', va='bottom', fontsize=8)
+
+    fig.suptitle(f'Сравнение методов: {group_name}', fontsize=14, y=1.02)
     plt.tight_layout()
 
     if output_file:
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
-        print(f"Boxplot сохранён: {output_file}")
-    plt.show()
-
-def plot_bar_with_ci(df, metric='pk', output_file=None):
-    """Столбчатая диаграмма средних значений с 95% доверительными интервалами."""
-    cols = get_metric_columns(df, metric)
-    active_cols = {label: col for label, col in cols.items() if df[col].mean() != 0}
-    methods = list(active_cols.keys())
-    means = []
-    low_err = []
-    high_err = []
-    colors = []
-
-    for m in methods:
-        data = df[active_cols[m]].dropna().values
-        m_mean, low, high = bootstrap_ci(data)
-        means.append(m_mean)
-        low_err.append(m_mean - low)
-        high_err.append(high - m_mean)
-        colors.append('#d62728' if 'Предлагаемый' in m else '#1f77b4')
-
-    plt.figure(figsize=(12, 6))
-    bars = plt.bar(methods, means, yerr=[low_err, high_err], capsize=5,
-                   color=colors, edgecolor='black', alpha=0.85)
-    plt.ylabel(metric.upper(), fontsize=12)
-    plt.title(f'Средние значения метрики {metric.upper()} с 95% доверительными интервалами', fontsize=14)
-    plt.xticks(rotation=30, ha='right', fontsize=10)
-    plt.grid(axis='y', linestyle='--', alpha=0.5)
-
-    for bar, mean_val in zip(bars, means):
-        plt.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 0.01,
-                 f'{mean_val:.3f}', ha='center', va='bottom', fontsize=9)
-
-    plt.tight_layout()
-    if output_file:
-        plt.savefig(output_file, dpi=150, bbox_inches='tight')
-        print(f"Столбчатая диаграмма сохранена: {output_file}")
+        print(f"Групповой график сохранён: {output_file}")
     plt.show()
 
 def create_summary_table(df, output_csv=None):
-    """Сводная таблица (среднее ± std) на русском."""
+    """Сводная таблица (среднее ± std) с русскими названиями метрик."""
     rows = []
-    for label, prefix in METHODS.items():
-        row = {'Метод': label}
+    for label, prefix in ALL_METHODS.items():
+        # Убираем переносы строк для печати в консоль
+        clean_label = label.replace('\n', ' ')
+        row = {'Метод': clean_label}
         for metric in METRICS:
             col = f"{prefix}_{metric}"
             if col in df.columns:
                 mean = df[col].mean()
                 std = df[col].std()
-                row[metric.upper()] = f"{mean:.3f} ± {std:.3f}"
+                row[METRIC_NAMES_RU[metric]] = f"{mean:.3f} ± {std:.3f}"
             else:
-                row[metric.upper()] = "—"
+                row[METRIC_NAMES_RU[metric]] = "—"
         rows.append(row)
 
     summary = pd.DataFrame(rows)
@@ -121,44 +143,24 @@ def create_summary_table(df, output_csv=None):
         print(f"Таблица сохранена: {output_csv}")
     return summary
 
-def print_bootstrap_ci(df, metric='pk', methods_of_interest=None):
-    """Выводит 95% доверительные интервалы для нескольких методов."""
-    if methods_of_interest is None:
-        methods_of_interest = ['Предлагаемый метод', 'Иерарх. класт. (MiniLM, истинное число блоков)',
-                               'Логистическая регрессия']
-
-    cols = get_metric_columns(df, metric)
-    print(f"\n95% доверительные интервалы для метрики {metric.upper()}:\n")
-    for label in methods_of_interest:
-        col = cols.get(label)
-        if col and col in df.columns:
-            mean, low, high = bootstrap_ci(df[col].dropna().values)
-            print(f"{label:40s} mean={mean:.4f}  CI=[{low:.4f}, {high:.4f}]")
-
 def main():
     Path(OUTPUT_DIR).mkdir(exist_ok=True)
     df = load_data()
 
-    # 1. Boxplot для Pk
-    plot_boxplot(df, metric='pk', output_file=f'{OUTPUT_DIR}/boxplot_pk.png')
+    # 1. Групповые сравнения
+    for group_name, method_list in GROUPS.items():
+        safe_name = group_name.replace(' ', '_').lower()
+        plot_group_comparison(
+            df,
+            group_name,
+            method_list,
+            output_file=f'{OUTPUT_DIR}/comparison_{safe_name}.png'
+        )
 
-    # 2. Boxplot для Boundary F1
-    plot_boxplot(df, metric='f1', output_file=f'{OUTPUT_DIR}/boxplot_f1.png')
-
-    # 3. Столбчатая диаграмма с доверительными интервалами (Pk)
-    plot_bar_with_ci(df, metric='pk', output_file=f'{OUTPUT_DIR}/barplot_pk_ci.png')
-
-    # 4. Столбчатая диаграмма для F1 (опционально)
-    plot_bar_with_ci(df, metric='f1', output_file=f'{OUTPUT_DIR}/barplot_f1_ci.png')
-
-    # 5. Сводная таблица
+    # 2. Сводная таблица
     create_summary_table(df, output_csv=f'{OUTPUT_DIR}/summary_table.csv')
 
-    # 6. Доверительные интервалы для главных метрик
-    print_bootstrap_ci(df, metric='pk')
-    print_bootstrap_ci(df, metric='f1')
-
-    print("\nГрафики и таблицы в папке", OUTPUT_DIR)
+    print("\nВсе графики и таблицы сохранены в папке", OUTPUT_DIR)
 
 if __name__ == "__main__":
     main()

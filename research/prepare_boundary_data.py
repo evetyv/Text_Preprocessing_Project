@@ -1,17 +1,23 @@
+# File: prepare_boundary_data.py
+
 import json
 import numpy as np
 from pathlib import Path
-from sklearn.model_selection import train_test_split
 
-def build_boundary_dataset_with_ids(processed_docs_path, test_size=0.2, random_seed=42):
+def build_boundary_dataset(processed_docs_path):
+    """
+    Формирует обучающий набор признаков и меток для логистической регрессии
+    из предоставленного файла обработанных документов.
+    Возвращает X, y, doc_ids, pair_indices для всех пар.
+    """
     with open(processed_docs_path, 'r', encoding='utf-8') as f:
         docs = json.load(f)
-    
+
     X = []
     y = []
     doc_ids = []       # идентификатор документа для каждой пары
-    pair_indices = []  # порядковый номер пары внутри документа 
-    
+    pair_indices = []  # порядковый номер пары внутри документа
+
     for doc in docs:
         sentences = doc['sentences']
         labels = doc['labels']
@@ -32,40 +38,34 @@ def build_boundary_dataset_with_ids(processed_docs_path, test_size=0.2, random_s
             y.append(labels[i+1])
             doc_ids.append(doc['doc_id'])
             pair_indices.append(i)  # i-я пара (предложения i и i+1)
-    
+
     X = np.array(X)
     y = np.array(y)
     doc_ids = np.array(doc_ids)
     pair_indices = np.array(pair_indices)
-    
-    # Разбиваем на train/test, сохраняя doc_ids и pair_indices
-    X_train, X_test, y_train, y_test, doc_ids_train, doc_ids_test, pair_idx_train, pair_idx_test = train_test_split(
-        X, y, doc_ids, pair_indices,
-        test_size=test_size, random_state=random_seed, stratify=y
-    )
-    
-    print(f"Всего пар: {len(X)}")
-    print(f"Обучающих: {len(X_train)}, границ: {y_train.sum()}")
-    print(f"Тестовых: {len(X_test)}, границ: {y_test.sum()}")
-    
-    return (X_train, X_test, y_train, y_test,
-            doc_ids_train, doc_ids_test, pair_idx_train, pair_idx_test)
+
+    print(f"Всего пар для обучения: {len(X)}")
+    print(f"Количество положительных примеров (границ): {y.sum()}")
+
+    return X, y, doc_ids, pair_indices
 
 def main():
-    processed_path = Path("research/data/rutextseg_processed.json")
-    if not processed_path.exists():
-        print("Файл не найден.")
+    # Путь к файлу с документами для обучения регрессии
+    train_path = Path("research/data/rutextseg_train_logreg.json")
+    if not train_path.exists():
+        print(f"Файл {train_path} не найден. Сначала запустите prepare_dataset.py")
         return
-    
-    (X_train, X_test, y_train, y_test,
-     doc_ids_train, doc_ids_test, pair_idx_train, pair_idx_test) = build_boundary_dataset_with_ids(processed_path)
-    
-    np.savez_compressed("research/data/boundary_data.npz",
-                        X_train=X_train, X_test=X_test,
-                        y_train=y_train, y_test=y_test,
-                        doc_ids_train=doc_ids_train, doc_ids_test=doc_ids_test,
-                        pair_idx_train=pair_idx_train, pair_idx_test=pair_idx_test)
-    print("Данные с doc_id сохранены в data/boundary_data.npz")
+
+    X_train, y_train, doc_ids_train, pair_idx_train = build_boundary_dataset(train_path)
+
+    # Сохраняем только обучающие данные
+    output_path = "research/data/boundary_train_data.npz"
+    np.savez_compressed(output_path,
+                        X_train=X_train,
+                        y_train=y_train,
+                        doc_ids_train=doc_ids_train,
+                        pair_idx_train=pair_idx_train)
+    print(f"Обучающие данные сохранены в {output_path}")
 
 if __name__ == "__main__":
     main()
